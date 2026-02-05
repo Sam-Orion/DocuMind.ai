@@ -1,26 +1,30 @@
 import pytest
+import sys
 from unittest.mock import MagicMock, patch
 import numpy as np
+
+# Create a mock for easyocr before importing the engine
+mock_easyocr = MagicMock()
+mock_reader = MagicMock()
+mock_easyocr.Reader.return_value = mock_reader
+sys.modules['easyocr'] = mock_easyocr
+
+# Now import the engine which will check sys.modules or try to import (and get our mock)
 from src.ocr.easy_ocr_engine import EasyOCREngine
 
 class TestOCR:
-    @pytest.fixture
-    def mock_reader(self):
-        with patch('easyocr.Reader') as MockReader:
-            # Create a mock instance
-            mock_instance = MagicMock()
-            MockReader.return_value = mock_instance
-            yield mock_instance
+    def setup_method(self):
+        # Reset the singleton and reader for each test
+        EasyOCREngine._reader_instance = None
+        mock_reader.reset_mock()
 
-    def test_initialization(self, mock_reader):
+    def test_initialization(self):
         """Test that EasyOCR reader is initialized correctly (singleton behavior)."""
         engine = EasyOCREngine(gpu=False)
         assert engine.reader is not None
-        # Should initialize with 'en' by default
-        # Note: Singleton logic might make strict 'called_once' checks tricky across tests 
-        # if not reset, but basic instantiation should pass.
-        
-    def test_extract_text(self, mock_reader):
+        mock_easyocr.Reader.assert_called()
+
+    def test_extract_text(self):
         """Test text extraction wrapper."""
         # Setup mock return value for readtext
         # Format: (bbox, text, prob)
@@ -42,7 +46,7 @@ class TestOCR:
         assert result['details'][0]['confidence'] == 0.99
         assert 'processing_time' in result
 
-    def test_extract_text_error_handling(self, mock_reader):
+    def test_extract_text_error_handling(self):
         """Test error handling when OCR fails."""
         mock_reader.readtext.side_effect = Exception("OCR Engine Failed")
         

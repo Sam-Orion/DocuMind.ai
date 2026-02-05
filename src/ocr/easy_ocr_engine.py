@@ -1,6 +1,5 @@
 import logging
 import time
-import easyocr
 import numpy as np
 from typing import List, Dict, Any, Union, Tuple
 from functools import lru_cache
@@ -21,7 +20,14 @@ class EasyOCREngine:
         Initialize the EasyOCR engine.
         Uses a singleton pattern for the reader to avoid reloading models.
         """
-        if EasyOCREngine._reader_instance is None:
+        # Lazy import to allow class usage even if easyocr is not installed (for testing/dev)
+        try:
+            import easyocr
+        except ImportError:
+            logger.error("EasyOCR not installed or broken. OCR will fail.")
+            easyocr = None
+
+        if EasyOCREngine._reader_instance is None and easyocr:
             logger.info(f"Initializing EasyOCR reader for languages: {languages}, GPU={gpu}...")
             start_time = time.time()
             try:
@@ -31,7 +37,7 @@ class EasyOCREngine:
             except Exception as e:
                 logger.error(f"Failed to initialize EasyOCR: {str(e)}")
                 raise e
-        else:
+        elif easyocr:
             logger.info("Using cached EasyOCR reader instance.")
 
         self.reader = EasyOCREngine._reader_instance
