@@ -1,62 +1,47 @@
 import pytest
 import numpy as np
 from unittest.mock import MagicMock, patch
-
-# This import will fail if dependencies (easyocr, python-bidi) are missing
-import easyocr 
-from src.ocr.easy_ocr_engine import EasyOCREngine
+from src.ocr.tesseract_engine import TesseractEngine
 
 class TestOCR:
-    def setup_method(self):
-        # Reset the singleton for each test
-        EasyOCREngine._reader_instance = None
-
-    @patch('src.ocr.easy_ocr_engine.easyocr.Reader') 
-    def test_initialization(self, mock_reader_cls):
-        """
-        Test that EasyOCR reader is initialized correctly.
-        We mock the Reader class to avoid downloading models.
-        """
-        mock_instance = MagicMock()
-        mock_reader_cls.return_value = mock_instance
+    
+    @patch('src.ocr.tesseract_engine.pytesseract')
+    def test_extract_text(self, mock_pytesseract):
+        """Test text extraction wrapper for Tesseract."""
         
-        engine = EasyOCREngine(gpu=False)
-        assert engine.reader is not None
-        mock_reader_cls.assert_called_once()
-
-    @patch('src.ocr.easy_ocr_engine.easyocr.Reader')
-    def test_extract_text(self, mock_reader_cls):
-        """Test text extraction wrapper."""
-        # Setup mock behavior
-        mock_instance = MagicMock()
-        mock_reader_cls.return_value = mock_instance
+        # Mock image_to_string
+        mock_pytesseract.image_to_string.return_value = "Hello World"
         
-        # Format: (bbox, text, prob)
-        mock_bbox = [[10, 10], [100, 10], [100, 50], [10, 50]]
-        mock_instance.readtext.return_value = [
-            (mock_bbox, "Hello", 0.99),
-            (mock_bbox, "World", 0.95)
-        ]
+        # Mock image_to_data (returns dict)
+        mock_pytesseract.image_to_data.return_value = {
+            'text': ['Hello', 'World', ''],
+            'conf': [99, 95, -1],
+            'left': [10, 60, 0],
+            'top': [10, 10, 0],
+            'width': [40, 40, 0],
+            'height': [20, 20, 0]
+        }
+        mock_pytesseract.Output.DICT = 'dict'
 
-        engine = EasyOCREngine()
+        engine = TesseractEngine()
         dummy_image = np.zeros((100, 100, 3), dtype=np.uint8)
         
         result = engine.extract_text(dummy_image)
         
-        assert result['text'] == "Hello\nWorld"
+        assert result['text'] == "Hello World"
         assert len(result['details']) == 2
         assert result['details'][0]['text'] == "Hello"
+        assert result['details'][0]['bbox']['x'] == 10
+        assert result['details'][0]['confidence'] == 0.99
 
-    @patch('src.ocr.easy_ocr_engine.easyocr.Reader')
-    def test_extract_text_error_handling(self, mock_reader_cls):
-        """Test error handling when OCR fails."""
-        mock_instance = MagicMock()
-        mock_reader_cls.return_value = mock_instance
-        mock_instance.readtext.side_effect = Exception("OCR Engine Failed")
+    @patch('src.ocr.tesseract_engine.pytesseract')
+    def test_tesseract_not_found(self, mock_pytesseract):
+        """Test error when binary is missing."""
+        mock_pytesseract.image_to_string.side_effect = Exception("Tesseract not found")
+        # Note: In real life pytesseract raises TesseractNotFoundError, but regular Exception is fine for general error catch test
         
-        engine = EasyOCREngine()
+        engine = TesseractEngine()
         dummy_image = np.zeros((100, 100, 3), dtype=np.uint8)
         
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(Exception):
             engine.extract_text(dummy_image)
-        assert "OCR Engine Failed" in str(excinfo.value)

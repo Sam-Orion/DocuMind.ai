@@ -4,7 +4,7 @@ from typing import Dict, Any, Union, List
 import numpy as np
 
 from src.preprocessing.image_processor import ImageProcessor
-from src.ocr.easy_ocr_engine import EasyOCREngine
+from src.ocr.tesseract_engine import TesseractEngine
 from src.classification.rule_based import RuleBasedClassifier
 from src.extraction.regex_extractor import RegexExtractor
 
@@ -24,7 +24,7 @@ class DocumentProcessor:
         """
         logger.info("Initializing DocumentPipeline components...")
         self.image_processor = ImageProcessor()
-        self.ocr_engine = EasyOCREngine()  # Singleton handles repeated init
+        self.ocr_engine = TesseractEngine()
         self.classifier = RuleBasedClassifier()
         self.extractor = RegexExtractor()
         logger.info("DocumentPipeline initialized successfully.")
