@@ -39,3 +39,10 @@ models/classification/
 *.db
 *.log
 .DS_Store
+
+# Models
+*.pth
+*.onnx
+models/*.pth
+models/*.bin
+models/*.h5
