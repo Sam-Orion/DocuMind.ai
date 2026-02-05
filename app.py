@@ -2,12 +2,15 @@ import streamlit as st
 import pandas as pd
 import json
 import time
+import requests
 import io
-from typing import Dict, Any
+import plotly.express as px
+from typing import Dict, Any, List
 
-from src.pipeline import DocumentProcessor
+# --- Configuration ---
+API_BASE_URL = "http://localhost:8000/api/v1"
+HEALTH_URL = "http://localhost:8000/health"
 
-# Page Config
 st.set_page_config(
     page_title="DocuMind AI",
     page_icon="📄",
@@ -15,188 +18,257 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for styling
+# --- Styling ---
 st.markdown("""
 <style>
     .metric-card {
-        padding: 10px;
-        border-radius: 5px;
-        border: 1px solid #e0e0e0;
-        background-color: #f9f9f9;
-        margin-bottom: 10px;
+        padding: 15px;
+        border-radius: 8px;
+        background-color: #f0f2f6;
+        border: 1px solid #dcdcdc;
     }
-    .stProgress .st-bo {
-        background-color: #4CAF50;
+    .status-badge {
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
     }
+    .status-success { background-color: #d4edda; color: #155724; }
+    .status-processing { background-color: #fff3cd; color: #856404; }
+    .status-failed { background-color: #f8d7da; color: #721c24; }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Processor (Cached)
-@st.cache_resource
-def get_processor():
-    return DocumentProcessor()
+# --- API Client ---
+class APIClient:
+    def is_healthy(self) -> bool:
+        try:
+            resp = requests.get(HEALTH_URL, timeout=2)
+            return resp.status_code == 200
+        except:
+            return False
 
-processor = get_processor()
+    def upload_document(self, file) -> Dict:
+        try:
+            files = {"file": (file.name, file.getvalue(), file.type)}
+            resp = requests.post(f"{API_BASE_URL}/process", files=files)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
-def color_confidence(val):
-    """
-    Color confidence scores: Green > 0.9, Yellow 0.7-0.9, Red < 0.7
-    """
-    if isinstance(val, (int, float)):
-        if val > 0.9:
-            color = '#d4edda' # Green
-        elif val > 0.7:
-            color = '#fff3cd' # Yellow
+    def get_result(self, doc_id: str) -> Dict:
+        try:
+            resp = requests.get(f"{API_BASE_URL}/result/{doc_id}")
+            if resp.status_code == 200:
+                return resp.json().get("data", {})
+            return {}
+        except:
+            return {}
+
+    def get_recent_documents(self, limit: int = 10) -> List[Dict]:
+        try:
+            resp = requests.get(f"{API_BASE_URL}/documents?limit={limit}")
+            if resp.status_code == 200:
+                data = resp.json().get("data", [])
+                # Ensure data is always a list
+                return data if isinstance(data, list) else []
+            return []
+        except:
+            return []
+            
+    def submit_correction(self, doc_id: str, updates: Dict) -> bool:
+        try:
+            resp = requests.post(f"{API_BASE_URL}/correct/{doc_id}", json={"updates": updates})
+            return resp.status_code == 200
+        except:
+            return False
+
+client = APIClient()
+
+# --- Session State ---
+if 'processed_uploads' not in st.session_state:
+    st.session_state.processed_uploads = {} # {filename: doc_id}
+
+# --- Functions ---
+def render_sidebar():
+    st.sidebar.title("DocuMind AI")
+    
+    # Status
+    healthy = client.is_healthy()
+    status_icon = "🟢" if healthy else "🔴"
+    status_text = "Online" if healthy else "Offline"
+    st.sidebar.caption(f"API Status: {status_icon} {status_text}")
+    
+    st.sidebar.divider()
+    
+    # Upload
+    uploaded_files = st.sidebar.file_uploader(
+        "Upload Documents", 
+        type=['pdf', 'jpg', 'png', 'jpeg'],
+        accept_multiple_files=True
+    )
+    
+    if uploaded_files:
+        if st.sidebar.button(f"Process {len(uploaded_files)} Files", type="primary"):
+            progress_bar = st.sidebar.progress(0)
+            for idx, file in enumerate(uploaded_files):
+                if file.name not in st.session_state.processed_uploads:
+                    res = client.upload_document(file)
+                    if res.get("status") == "success":
+                         st.session_state.processed_uploads[file.name] = res["data"]["document_id"]
+                progress_bar.progress((idx + 1) / len(uploaded_files))
+            st.rerun()
+
+    # History
+    st.sidebar.divider()
+    st.sidebar.subheader("History")
+    recent = client.get_recent_documents()
+    for doc in recent:
+        label = f"{doc.get('filename','unknown')} ({doc.get('status','?')})"
+        if st.sidebar.button(label, key=doc.get('id')):
+             st.session_state.selected_doc_id = doc.get('id')
+
+def render_confidence_chart(flat_data):
+    if not flat_data:
+        return
+    df = pd.DataFrame(flat_data)
+    fig = px.bar(
+        df, 
+        x='Field', 
+        y='Confidence', 
+        color='Confidence',
+        color_continuous_scale=['red', 'yellow', 'green'],
+        range_y=[0, 1],
+        title="Extraction Confidence"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+def render_main():
+    # 1. Dashboard View (Processed Files Tracker)
+    if not getattr(st.session_state, 'selected_doc_id', None):
+        st.header("Dashboard")
+        if st.session_state.processed_uploads:
+            st.subheader("Current Batch")
+            status_data = []
+            
+            # Simple polling simulation triggers on rerun
+            # In a real app we might use st_autorefresh or similar
+            
+            for fname, doc_id in st.session_state.processed_uploads.items():
+                res = client.get_result(doc_id)
+                status = res.get("status", "processing")
+                status_data.append({
+                    "Filename": fname,
+                    "Status": status,
+                    "Type": res.get("document_type", "-"),
+                    "ID": doc_id
+                })
+            
+            df_status = pd.DataFrame(status_data)
+            
+            # Custom Rendering
+            for _, row in df_status.iterrows():
+                col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
+                col1.write(f"**{row['Filename']}**")
+                
+                s = row['Status']
+                badge_class = f"status-{s}" if s in ['completed', 'failed'] else "status-processing"
+                col2.markdown(f"<span class='status-badge {badge_class}'>{s.upper()}</span>", unsafe_allow_html=True)
+                
+                col3.write(row['Type'])
+                if col4.button("View", key=f"view_{row['ID']}"):
+                    st.session_state.selected_doc_id = row['ID']
+                    st.rerun()
+            
+            if st.button("Refresh Status"):
+                st.rerun()
         else:
-            color = '#f8d7da' # Red
-        return f'background-color: {color}; color: black'
-    return ''
+             st.info("Upload documents via the sidebar to start.")
+
+    # 2. Detail View
+    else:
+        doc_id = st.session_state.selected_doc_id
+        if st.button("← Back to Dashboard"):
+            del st.session_state.selected_doc_id
+            st.rerun()
+            
+        data = client.get_result(doc_id)
+        if not data:
+            st.error("Could not load document details.")
+            return
+
+        st.title(f"📄 {data.get('filename')}")
+        
+        # Metrics
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Status", data.get("status").upper())
+        m2.metric("Type", data.get("document_type", "Unknown"))
+        conf = data.get("confidence")
+        m3.metric("Confidence", f"{conf:.2%}" if conf else "N/A")
+        
+        extracted = data.get("extracted_data", {})
+        
+        # Flatten for Table
+        flat_data = []
+        # Key -> Value map for editor
+        table_data = []
+        
+        for k, v in extracted.items():
+            # Handle list of dicts structure (v is list of extractions)
+            if isinstance(v, list) and len(v) > 0:
+                 for item in v:
+                     flat_data.append({
+                         "Field": k,
+                         "Value": item.get('value'),
+                         "Confidence": item.get('confidence')
+                     })
+                     table_data.append({
+                         "Field": k,
+                         "Value": item.get('value')
+                     })
+            # Handle direct values for retro-compatibility
+            elif isinstance(v, str):
+                flat_data.append({"Field": k, "Value": v, "Confidence": 1.0})
+                table_data.append({"Field": k, "Value": v})
+
+        # Tabs
+        tab1, tab2, tab3 = st.tabs(["Extraction & Correction", "Visuals", "Raw Data"])
+        
+        with tab1:
+            st.subheader("Extracted Data")
+            
+            # Interactive Editor for Corrections
+            if table_data:
+                df_editor = pd.DataFrame(table_data)
+                edited_df = st.data_editor(
+                    df_editor,
+                    num_rows="dynamic",
+                    key=f"editor_{doc_id}",
+                    use_container_width=True
+                )
+                
+                if st.button("Save Corrections", type="primary"):
+                    # Diff Logic (Simple: Send all non-empty fields)
+                    updates = {row["Field"]: row["Value"] for _, row in edited_df.iterrows() if row["Field"]}
+                    if client.submit_correction(doc_id, updates):
+                        st.success("Corrections saved!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Failed to save corrections.")
+            else:
+                st.info("No data extracted yet.")
+
+        with tab2:
+            st.subheader("Confidence Scores")
+            render_confidence_chart(flat_data)
+
+        with tab3:
+            st.json(data)
 
 def main():
-    st.title("📄 DocuMind AI")
-    st.markdown("### Intelligent Document Processing System")
-
-    # --- Sidebar ---
-    st.sidebar.header("Upload Document")
-    uploaded_file = st.sidebar.file_uploader(
-        "Choose a file", 
-        type=['png', 'jpg', 'jpeg', 'pdf'],
-        help="Max file size: 10MB"
-    )
-
-    doc_type_option = st.sidebar.selectbox(
-        "Document Type",
-        ["Auto-detect", "Invoice", "Receipt", "Resume", "ID Document", "Business Card"]
-    )
-
-    process_btn = st.sidebar.button("Process Document", type="primary")
-
-    # --- Main Content ---
-    if uploaded_file is not None:
-        # File details
-        file_details = {
-            "Filename": uploaded_file.name,
-            "FileType": uploaded_file.type,
-            "FileSize": f"{uploaded_file.size / 1024:.2f} KB"
-        }
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.info(f"File: {uploaded_file.name}")
-            # Preview (Image only for now, PDF preview requires extra handling)
-            if uploaded_file.type.startswith('image'):
-                st.image(uploaded_file, caption='Document Preview', use_column_width=True)
-            else:
-                st.write("PDF Preview not supported yet.")
-
-        if process_btn:
-            with col2:
-                with st.spinner("Processing document... Please wait"):
-                    # Read file bytes
-                    bytes_data = uploaded_file.getvalue()
-                    
-                    # Run Pipeline
-                    try:
-                        results = processor.process_document(bytes_data)
-                    except Exception as e:
-                        st.error(f"Error processing document: {str(e)}")
-                        return
-
-                    if results.get("status") == "error":
-                        st.error(f"Pipeline Error: {results.get('error')}")
-                        return
-
-                    # -- Display Results --
-                    
-                    # 1. Classification
-                    st.divider()
-                    st.subheader("Classification")
-                    
-                    detected_type = results.get("document_type", "Unknown")
-                    confidence = results.get("confidence", 0.0)
-                    
-                    # Handle manual override logic if needed, currently just showing detected
-                    final_type = detected_type if doc_type_option == "Auto-detect" else doc_type_option
-                    
-                    metric_col1, metric_col2, metric_col3 = st.columns(3)
-                    with metric_col1:
-                        st.metric("Document Type", final_type)
-                    with metric_col2:
-                         st.metric("Confidence", f"{confidence:.2%}")
-                    with metric_col3:
-                         st.metric("Processing Time", f"{results['performance']['total_time']:.2f}s")
-                    
-                    if confidence > 0.8:
-                        st.success(f"Confident it's a {final_type}")
-                    elif confidence > 0.5:
-                        st.warning(f"Likely a {final_type}")
-                    else:
-                        st.error(f"Unsure, detected {final_type}")
-
-                    # 2. Extracted Fields
-                    st.divider()
-                    st.subheader("Extracted Data")
-                    
-                    extracted_fields = results.get("extracted_fields", {})
-                    flat_data = []
-                    
-                    # Flatten the dictionary for table display
-                    for field_type, items in extracted_fields.items():
-                        for item in items:
-                            flat_data.append({
-                                "Field": field_type,
-                                "Value": item['value'],
-                                "Confidence": item['confidence'],
-                                "Original Text": item.get('original_text', '')
-                            })
-                    
-                    if flat_data:
-                        df = pd.DataFrame(flat_data)
-                        
-                        # Apply coloring
-                        st.dataframe(
-                            df.style.map(color_confidence, subset=['Confidence'])
-                                    .format({"Confidence": "{:.2%}"}),
-                            use_container_width=True
-                        )
-                        
-                        # Exports
-                        csv = df.to_csv(index=False).encode('utf-8')
-                        json_str = json.dumps(results, indent=2)
-                        
-                        btn_col1, btn_col2 = st.columns(2)
-                        with btn_col1:
-                            st.download_button(
-                                "Download CSV",
-                                csv,
-                                "extracted_data.csv",
-                                "text/csv",
-                                key='download-csv'
-                            )
-                        with btn_col2:
-                            st.download_button(
-                                "Download JSON",
-                                json_str,
-                                "full_results.json",
-                                "application/json",
-                                key='download-json'
-                            )
-
-                    else:
-                        st.info("No specific fields extracted.")
-
-                    # 3. OCR Text
-                    with st.expander("View Raw OCR Text"):
-                        st.text_area("Full Text", results.get("text_content", ""), height=300)
-                    
-                    # 4. Debug Info
-                    with st.expander("Debug & Performance Details"):
-                        st.json(results.get("performance"))
-                        st.json(results.get("classification_details"))
-
-    else:
-        st.info("Please upload a document to begin.")
+    render_sidebar()
+    render_main()
 
 if __name__ == "__main__":
     main()

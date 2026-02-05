@@ -5,7 +5,7 @@ import logging
 import filetype 
 import shutil
 import asyncio
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,10 +17,11 @@ import pandas as pd
 import io
 import json
 from sqlalchemy.orm import Session
+from sqlalchemy import desc
 
 from src.api.schemas import DocumentResponse, ProcessingResult, CorrectionRequest
 from src.pipeline import DocumentProcessor
-from src.database.db import get_db, init_db, CRUD, SessionLocal
+from src.database.db import get_db, init_db, CRUD, SessionLocal, ProcessedDocument
 from src.extraction.hybrid_extractor import HybridExtractor 
 
 # Configure Logging
@@ -69,16 +70,6 @@ def process_file_task(doc_id: str, file_path: str):
     try:
         logger.info(f"Starting processing for {doc_id}")
         result = processor.process_document(file_path)
-        
-        # Result dict structure from pipeline:
-        # {
-        #   "status": "success",
-        #   "document_type": ...,
-        #   "confidence": ...,
-        #   "extracted_fields": {...},
-        #   "text_content": ...,
-        #   ...
-        # }
         
         if result['status'] == 'success':
             CRUD.update_document_result(
@@ -162,9 +153,6 @@ def get_result(document_id: str, db: Session = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # doc is returned as a dict by CRUD Helper to match schema structure
-    # We map it to Pydantic
-    
     res = ProcessingResult(
         document_id=doc['id'],
         filename=doc['filename'],
@@ -181,6 +169,25 @@ def get_result(document_id: str, db: Session = Depends(get_db)):
         status="success",
         message="Result retrieved",
         data=res
+    )
+
+@app.get("/api/v1/documents")
+def get_recent_documents(limit: int = 10, db: Session = Depends(get_db)):
+    docs = db.query(ProcessedDocument).order_by(desc(ProcessedDocument.upload_timestamp)).limit(limit).all()
+    
+    results = []
+    for doc in docs:
+        results.append({
+            "id": doc.id,
+            "filename": doc.filename,
+            "status": doc.status,
+            "upload_timestamp": doc.upload_timestamp.isoformat() if doc.upload_timestamp else None
+        })
+        
+    return DocumentResponse(
+        status="success",
+        message="Recent documents retrieved",
+        data=results
     )
 
 @app.get("/api/v1/export/{document_id}")

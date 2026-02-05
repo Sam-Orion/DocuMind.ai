@@ -16,7 +16,7 @@ class ProcessingResult(BaseModel):
 class DocumentResponse(BaseModel):
     status: str
     message: str
-    data: Optional[Union[ProcessingResult, Dict, str]] = None
+    data: Optional[Union[ProcessingResult, Dict, str, List]] = None
 
 class CorrectionRequest(BaseModel):
     updates: Dict[str, Any]

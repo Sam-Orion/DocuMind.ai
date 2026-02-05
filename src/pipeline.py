@@ -81,14 +81,18 @@ class DocumentProcessor:
             # 4. Extraction
             start = time.time()
             logger.info("Stage 4: Extraction...")
-            extraction_results = {
-                "emails": self.extractor.extract_emails(full_text),
-                "phones": self.extractor.extract_phone_numbers(full_text),
-                "dates": self.extractor.extract_dates(full_text),
-                "amounts": self.extractor.extract_amounts(full_text),
-                "invoice_numbers": self.extractor.extract_invoice_number(full_text),
-                "urls": self.extractor.extract_urls(full_text)
-            }
+            if hasattr(self.extractor, 'extract_all'):
+                extraction_results = self.extractor.extract_all(full_text)
+            else:
+                # Fallback for legacy RegexExtractor (mapped to singular keys for consistency)
+                extraction_results = {
+                    "email": self.extractor.extract_emails(full_text),
+                    "phone_number": self.extractor.extract_phone_numbers(full_text),
+                    "date": self.extractor.extract_dates(full_text),
+                    "amount": self.extractor.extract_amounts(full_text),
+                    "invoice_number": self.extractor.extract_invoice_number(full_text),
+                    "url": self.extractor.extract_urls(full_text)
+                }
             timings['extraction'] = time.time() - start
 
             total_duration = time.time() - pipeline_start
