@@ -16,10 +16,11 @@ from slowapi.errors import RateLimitExceeded
 import pandas as pd
 import io
 import json
+from sqlalchemy.orm import Session
 
 from src.api.schemas import DocumentResponse, ProcessingResult, CorrectionRequest
 from src.pipeline import DocumentProcessor
-from src.database.db import Database
+from src.database.db import get_db, init_db, CRUD, SessionLocal
 from src.extraction.hybrid_extractor import HybridExtractor 
 
 # Configure Logging
@@ -37,6 +38,9 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# Init Tables
+init_db()
+
 # Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -51,9 +55,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database
-db = Database()
-
 processor = DocumentProcessor()
 try:
     processor.extractor = HybridExtractor()
@@ -63,15 +64,42 @@ except Exception as e:
 
 # Background Task
 def process_file_task(doc_id: str, file_path: str):
+    # Create a fresh session for the background task
+    db = SessionLocal()
     try:
         logger.info(f"Starting processing for {doc_id}")
         result = processor.process_document(file_path)
-        db.update_result(doc_id, result, status="completed")
-        logger.info(f"Processing completed for {doc_id}")
+        
+        # Result dict structure from pipeline:
+        # {
+        #   "status": "success",
+        #   "document_type": ...,
+        #   "confidence": ...,
+        #   "extracted_fields": {...},
+        #   "text_content": ...,
+        #   ...
+        # }
+        
+        if result['status'] == 'success':
+            CRUD.update_document_result(
+                db, 
+                doc_id, 
+                classification={
+                    'document_type': result.get('document_type'),
+                    'confidence': result.get('confidence')
+                },
+                extractions=result.get('extracted_fields', {}),
+                text_content=result.get('text_content', "")
+            )
+            logger.info(f"Processing completed for {doc_id}")
+        else:
+             CRUD.mark_failed(db, doc_id, result.get('error', 'Unknown error'))
         
     except Exception as e:
         logger.error(f"Processing failed for {doc_id}: {e}")
-        db.update_result(doc_id, {"error": str(e)}, status="failed")
+        CRUD.mark_failed(db, doc_id, str(e))
+    finally:
+        db.close()
 
 # Endpoints
 
@@ -84,32 +112,24 @@ def health_check():
 async def process_document(
     request: Request,
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks()
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db)
 ):
     # 1. Validation
-    # Read file header for kind check (first 2kb)
     contents = await file.read(2048)
     kind = filetype.guess(contents)
     await file.seek(0) # Reset
     
-    # MIME Checks
-    # Allowed: pdf, jpg, png, tiff
-    # filetype returns validation object
-    
     allowed_mimes = ["application/pdf", "image/jpeg", "image/png", "image/tiff"]
     
     if kind is None:
-         # Fallback check methods or strict fail? 
-         # Some PDFs might not match magic bytes easily if malformed?
-         # Check extension as fallback context
          if file.content_type not in allowed_mimes:
              raise HTTPException(status_code=400, detail="Unknown file type.")
     elif kind.mime not in allowed_mimes:
         raise HTTPException(status_code=400, detail=f"Invalid file type: {kind.mime}. Allowed: PDF, JPEG, PNG, TIFF")
     
-    # Check size
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > 10 * 1024 * 1024: # 10MB
+    if content_length and int(content_length) > 10 * 1024 * 1024: 
         raise HTTPException(status_code=413, detail="File too large (max 10MB)")
 
     # 2. Save
@@ -125,7 +145,7 @@ async def process_document(
         file.file.close()
 
     # 3. DB Init
-    db.save_document(doc_id, file.filename)
+    CRUD.create_document(db, doc_id, file.filename)
 
     # 4. Enqueue
     background_tasks.add_task(process_file_task, doc_id, file_path)
@@ -137,19 +157,21 @@ async def process_document(
     )
 
 @app.get("/api/v1/result/{document_id}", response_model=DocumentResponse)
-def get_result(document_id: str):
-    doc = db.get_document(document_id)
+def get_result(document_id: str, db: Session = Depends(get_db)):
+    doc = CRUD.get_document(db, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Construct response
+    # doc is returned as a dict by CRUD Helper to match schema structure
+    # We map it to Pydantic
+    
     res = ProcessingResult(
         document_id=doc['id'],
         filename=doc['filename'],
         status=doc['status'],
-        upload_timestamp=datetime.fromisoformat(doc['upload_timestamp']),
-        processed_timestamp=datetime.fromisoformat(doc['processed_timestamp']) if doc['processed_timestamp'] else None,
-        extracted_data=doc['result_json'].get('extracted_fields') if doc['result_json'] else None,
+        upload_timestamp=datetime.fromisoformat(doc['upload_timestamp']) if doc['upload_timestamp'] else datetime.utcnow(),
+        processed_timestamp=datetime.fromisoformat(doc['processed_timestamp']) if doc.get('processed_timestamp') else None,
+        extracted_data=doc['result_json'].get('extracted_fields'),
         document_type=doc['result_json'].get('document_type'),
         confidence=doc['result_json'].get('confidence'),
         error=doc['result_json'].get('error')
@@ -162,26 +184,19 @@ def get_result(document_id: str):
     )
 
 @app.get("/api/v1/export/{document_id}")
-def export_data(document_id: str, format: str = "json"):
-    doc = db.get_document(document_id)
+def export_data(document_id: str, format: str = "json", db: Session = Depends(get_db)):
+    doc = CRUD.get_document(db, document_id)
     if not doc or doc['status'] != 'completed':
         raise HTTPException(status_code=404, detail="Document not found or not ready")
     
     data = doc['result_json'].get('extracted_fields', {})
     
-    # Flatten specific complex fields if CSV
-    
     if format.lower() == 'json':
         return JSONResponse(content=data)
     elif format.lower() == 'csv':
-        # Simple flattening for MVP: keys -> cols
-        # Complex lists (like line items) might need special handling.
-        # For now, just top-level kv pairs.
         flat_data = {}
         for k, v in data.items():
             if isinstance(v, list):
-                 # Join first few or just count? 
-                 # e.g. emails: "a@b.com; c@d.com"
                  if len(v) > 0 and isinstance(v[0], dict) and 'value' in v[0]:
                      flat_data[k] = "; ".join([str(item['value']) for item in v])
                  else:
@@ -199,39 +214,12 @@ def export_data(document_id: str, format: str = "json"):
         raise HTTPException(status_code=400, detail="Unsupported format. Use 'json' or 'csv'.")
 
 @app.post("/api/v1/correct/{document_id}", response_model=DocumentResponse)
-def submit_correction(document_id: str, request: CorrectionRequest):
-    doc = db.get_document(document_id)
+def submit_correction(document_id: str, request: CorrectionRequest, db: Session = Depends(get_db)):
+    doc = CRUD.get_document(db, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
         
-    current_result = doc['result_json']
-    # Merge updates
-    # Logic: Update extracted_fields directly?
-    
-    if 'extracted_fields' not in current_result:
-        current_result['extracted_fields'] = {}
-        
-    # We update the fields. Pydantic ensures 'updates' is a dict.
-    # Note: A real system would track version history.
-    for k, v in request.updates.items():
-        # User provides corrected values (simple strings usually)
-        # We might wrap them back into our dict format with "confidence": 1.0 (Manual)
-        
-        # Check if user passed full structure or just value
-        if isinstance(v, dict) and 'value' in v:
-            current_result['extracted_fields'][k] = [v] # Replace or append? Assuming replace for simple fields
-        else:
-             # Assume single value replacement for simple fields
-             # We need to wrap it to match our 'List[Dict]' structure if standardizing
-             # Or just allow mixed types.
-             # For consistency with pipeline:
-             current_result['extracted_fields'][k] = [{
-                 "value": v,
-                 "confidence": 1.0,
-                 "source": "manual_correction"
-             }]
-             
-    db.update_result(document_id, current_result, status="completed")
+    CRUD.add_correction(db, document_id, request.updates)
     
     return DocumentResponse(
         status="success",

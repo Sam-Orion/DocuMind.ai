@@ -1,9 +1,32 @@
 import pytest
 from fastapi.testclient import TestClient
-from main import app, db
+from main import app, get_db
+from src.database.db import Base
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 import os
 import shutil
 import time
+
+from sqlalchemy.pool import StaticPool
+
+# Use in-memory DB for integration tests too
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, 
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def override_get_db():
+    try:
+        db = TestingSessionLocal()
+        yield db
+    finally:
+        db.close()
+
+app.dependency_overrides[get_db] = override_get_db
 
 client = TestClient(app)
 
@@ -11,11 +34,14 @@ client = TestClient(app)
 @pytest.fixture(scope="module", autouse=True)
 def setup_teardown():
     # Setup
+    Base.metadata.create_all(bind=engine)
     os.makedirs("data/raw", exist_ok=True)
     yield
     # Teardown
+    Base.metadata.drop_all(bind=engine)
     if os.path.exists("documind.db"):
         os.remove("documind.db")
+
     if os.path.exists("data/raw"):
         # Don't delete entire dir if used by others, but for test isolation it's good
         pass 
@@ -47,7 +73,10 @@ def test_process_document_success():
     # Use unittest.mock
     from unittest.mock import patch
     
-    with patch('main.processor.process_document') as mock_process:
+    # Patch SessionLocal used by background task to use our test DB
+    with patch('main.processor.process_document') as mock_process, \
+         patch('main.SessionLocal', return_value=TestingSessionLocal()):
+        
         mock_process.return_value = {
             "status": "success", 
             "extracted_fields": {"test": "val"},
@@ -62,25 +91,38 @@ def test_process_document_success():
         doc_id = data["data"]["document_id"]
         
         # Verify DB Entry exists
-        saved_doc = db.get_document(doc_id)
+        # We need to access the DB used by the app. Since we use in-memory and override, 
+        # we can open a new session from TestingSessionLocal to check state.
+        
+        db = TestingSessionLocal()
+        from src.database.db import CRUD
+        saved_doc = CRUD.get_document(db, doc_id)
+        db.close()
+        
         assert saved_doc is not None
         
         # TestClient runs background tasks synchronously, so it should be completed immediately after request returns
         assert saved_doc['status'] == 'completed'
-        assert saved_doc['result_json']['extracted_fields']['test'] == "val"
+        assert saved_doc['result_json']['extracted_fields']['test'][0]['value'] == "val"
 
 def test_get_result():
     # Manually insert a completed doc
-    db.save_document("test_id_123", "test.pdf", status="completed")
-    db.update_result("test_id_123", {"extracted_fields": {"email": "test@test.com"}}, status="completed")
+    db = TestingSessionLocal()
+    from src.database.db import CRUD
+    CRUD.create_document(db, "test_id_123", "test.pdf")
+    CRUD.update_document_result(db, "test_id_123", {}, {"email": "test@test.com"}, "")
+    db.close()
     
     response = client.get("/api/v1/result/test_id_123")
     assert response.status_code == 200
-    assert response.json()["data"]["extracted_data"]["email"] == "test@test.com"
+    assert response.json()["data"]["extracted_data"]["email"][0]["value"] == "test@test.com"
 
 def test_export_csv():
-    db.save_document("test_csv", "test.pdf", status="completed")
-    db.update_result("test_csv", {"extracted_fields": {"email": "csv@test.com"}}, status="completed")
+    db = TestingSessionLocal()
+    from src.database.db import CRUD
+    CRUD.create_document(db, "test_csv", "test.pdf")
+    CRUD.update_document_result(db, "test_csv", {}, {"email": "csv@test.com"}, "")
+    db.close()
     
     response = client.get("/api/v1/export/test_csv?format=csv")
     assert response.status_code == 200
