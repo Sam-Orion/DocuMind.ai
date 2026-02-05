@@ -19,7 +19,7 @@ class RegexExtractor:
             # US and International phone format approximation
             "phone": r'(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?:\s*(?:ext|x)\s*\d+)?',
             # Capture various date formats: MM/DD/YYYY, YYYY-MM-DD, DD-Mon-YYYY
-            "date": r'\b(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-.\s,]\d{1,2}[-.\s,]\d{4})\b',
+            "date": r'\b(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-.\s,]+\d{1,2}[-.\s,]+\d{4})\b',
             # Amounts: Currency symbols optionally, followed by numbers with commas/decimals
             "amount": r'(?:[\$₹€£]|USD|INR|EUR)?\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\b',
             # Invoice Numbers: Look for keywords like "Invoice #" followed by alphanumeric
