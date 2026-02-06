@@ -34,16 +34,58 @@ class AutoCorrector:
         if not amount_str:
             return None
             
-        # 1. Clean up known non-numeric junk
+    @staticmethod
+    def correct_amount_format(amount_str: str) -> Optional[float]:
+        """
+        Normalize currency amounts.
+        """
+        if not amount_str:
+            return None
+            
+        str_val = str(amount_str)
+        
+        # 0. Heuristic: Remove words that look like text/currency codes first.
+        # We consider a word "text" if it contains letters that are NOT in our replacement list.
+        # Confusion list: O, o, S, s, B, l, I, Z
+        confusion_chars = set(['O', 'o', 'S', 's', 'B', 'l', 'I', 'Z'])
+        
+        # Split by whitespace to handle "USD 50.00"
+        parts = str_val.split()
+        valid_parts = []
+        
+        for part in parts:
+            # Check if part contains any alpha char NOT in confusion_chars
+            # If so, we assume it's a label/code (e.g. "USD", "Total") and discard it.
+            # We use checks on standard ASCII letters A-Za-z.
+            is_text_word = False
+            for char in part:
+                 if char.isalpha() and char not in confusion_chars:
+                     is_text_word = True
+                     break
+            
+            if not is_text_word:
+                valid_parts.append(part)
+        
+        # If we filtered everything away (e.g. "Free"), return None
+        if not valid_parts:
+            # Fallback: maybe it was compact like "GBP100"?
+            # If strict filtering killed it, try the original string but strict regex?
+            # For now, let's respect the filtering.
+             return None
+             
+        str_val = " ".join(valid_parts)
+        
+        # 1. OCR Character Replacements (Targeted)
+        replacements = {'O': '0', 'o': '0', 'S': '5', 's': '5', 'B': '8', 'l': '1', 'I': '1', 'Z': '2'}
+        for char, rep in replacements.items():
+            str_val = str_val.replace(char, rep)
+
+        # 2. Clean up known non-numeric junk
         # Remove currency symbols and valid text
         # Keep digits, dots, commas, minus sign
-        cleaned = re.sub(r"[^\d.,-]", "", str(amount_str))
+        cleaned = re.sub(r"[^\d.,-]", "", str_val)
         
-        # 2. Handle common OCR char swaps for numbers if it looks like a number context
-        # 'O' -> '0', 'l' -> '1', 'S' -> '5' (dangerous if mixed with text, but amount_str assumes prior field extraction)
-        # But for strictly numeric fields, it's often safer to rely on regex extractor. 
-        # Here we assume extraction happened, so we just parse standard formats.
-        
+        # 3. Handle decimal/thousand separators logic
         try:
             # If comma is decimal separator (10,00) vs thousands separator (10,000.00) makes it tricky
             # Heuristic: if '.' in string, assume dot is decimal unless multiple dots.
