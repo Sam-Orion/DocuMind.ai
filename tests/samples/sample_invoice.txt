@@ -1,0 +1,29 @@
+ACME Corp
+123 Innovation Drive
+Tech City, TC 94000
+support@acmecorp.com
+(555) 123-4567
+
+BILL TO:
+John Doe
+789 Pine Street
+Somewhere, CA 90210
+john.doe@email.com
+
+Invoice Number: INV-2023-1001
+Date: 2023-11-01
+Due Date: 2023-11-15
+PO Number: PO-998877
+
+DESCRIPTION          QTY    UNIT PRICE    AMOUNT
+Consulting Services   10       150.00    1500.00
+Software License       1       500.00     500.00
+Training Materials     5        50.00     250.00
+
+Subtotal: $2250.00
+Tax (10%): $225.00
+Total: $2475.00
+
+Payment Terms: Net 15
+Please make checks payable to ACME Corp.
+Thank you for your business!
