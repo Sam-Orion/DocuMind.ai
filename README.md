@@ -1,37 +1,45 @@
 # DocuMind AI
 
-An intelligent document processing system that extracts structured data from PDFs and images using OCR and NLP techniques.
+An intelligent document processing system that extracts structured data from PDFs and images using OCR, NLP, and rule-based heuristics.
 
 ## 🚀 Features
 
 -   **Multi-Format Support**: Processes PDF documents and images (JPG, PNG).
--   **Intelligent OCR**: Utilizes **Tesseract OCR** for robust text extraction.
--   **Automatic Classification**: Categorizes documents (Invoices, Receipts, Resumes, etc.) using rule-based heuristics.
--   **Structured Extraction**: Extracts key fields including:
-    -   Emails & Phone numbers
-    -   Dates (Normalized to ISO format)
-    -   monetary Amounts
-    -   Invoice Numbers & URLs
--   **Interactive UI**: Streamlit-based frontend for easy file upload, visualization, and validation.
--   **Export**: Download extracted data as JSON or CSV.
+-   **Intelligent OCR**: Utilizes **Tesseract OCR (v5)** for robust text extraction suitable for diverse layouts.
+-   **Specialized Extraction**:
+    -   **Invoices**: Extracts Invoice IDs, Dates, Totals, Tax, Subtotals, and Vendor info using spatial context.
+    -   **Receipts**: Captures Merchant names, Transaction Dates, Totals, and Auth Codes from noisy receipt images.
+    -   **Resumes**: Parses contact info (Phone, Email, LinkedIn), Education, Work Experience, and Skills using section analysis and NER.
+-   **Smart Validation & Correction**:
+    -   **Auto-Correction**: Normalizes dates to ISO-8601, cleans up currency amounts (fixes common OCR errors like 'O' -> '0'), and formats phone numbers to E.164.
+    -   **Logic Validation**: Cross-checks mathematical integrity (e.g., `Subtotal + Tax == Total`) and date logic (e.g., `Due Date >= Invoice Date`).
+-   **Interactive UI**: Streamlit-based frontend for easy file upload, visualization, and real-time feedback.
+-   **Export**: Download extracted and validated data as JSON.
 
-## 🛠️ Architecture & Tech Stack
+## 🏗️ Architecture & Design Choices
 
--   **Frontend**: Streamlit
--   **Backend**: FastAPI (In progress)
--   **Core Modules**:
-    -   `src.preprocessing`: OpenCV-based image enhancement (deskewing, denoising).
-    -   `src.ocr`: **Tesseract Engine** (chosen for stability).
-    -   `src.classification`: Rule-based classifier (keyword/regex patterns).
-    -   `src.extraction`: Regex-based field extractor with confidence scoring.
+### 1. Hybrid Extraction Strategy
+We employ a tiered approach to extraction to maximize accuracy across different document types:
+-   **Regex & Heuristics**: For highly structured fields like emails, dates, and phone numbers.
+-   **Spatial Layout Analysis**: For documents like Invoices and Receipts where position matters (e.g., Total is usually at the bottom right).
+-   **NLP / NER (spaCy)**: For unstructured text in Resumes to identify Organizations, Dates, and Person names.
 
-### 💡 Architectural Decision: OCR Engine Pivot
+### 2. OCR Engine: Tesseract 5
+**Decision**: Pivoted from EasyOCR to Tesseract 5.
+**Why**:
+-   **Stability**: Tesseract is a mature, system-level dependency with predictable behavior, avoiding the "dependency hell" often seen with Python-only OCR wrappers.
+-   **Performance**: FASTER processing for standard documents.
+-   **Layout Analyis**: Tesseract's page segmentation modes (PSM) provide excellent block detection which is critical for parsing columns in resumes or tables in invoices.
 
-> **Note on OCR Engine:**
-> Initially, this project utilized **EasyOCR**. However, we encountered persistent compatibility issues with `python-bidi` and newer Python versions (3.12+), leading to unavoidable `ModuleNotFoundError` crashes in production environments.
->
-> **Decision:** We pivoted to **Tesseract OCR (`pytesseract`)**.
-> **Reasoning:** Tesseract provides a more stable, system-level dependency that does not rely on the fragile `bidi` library, ensuring reliable deployments and easier CI/CD integration.
+### 3. Validation Layer
+We believe extraction is only half the battle. Data must be *correct*.
+-   **Field-Level**: Validates individual formats (Date ranges, Email structure).
+-   **Cross-Field**: Ensures business logic holds true. If the extracted "Total" doesn't match the sum of line items, we flag it.
+
+### 4. Auto-Corrector
+OCR is never 100% perfect. Our `AutoCorrector` module handles common pitfalls:
+-   **Confusables**: Replacing 'S' with '5' or 'O' with '0' in numeric fields.
+-   **Format Normalization**: converting "Jan 5, 2023" to "2023-01-05".
 
 ## 📦 Installation
 
@@ -68,6 +76,11 @@ sudo apt-get install tesseract-ocr
     pip install -r requirements.txt
     ```
 
+    *Note: `en_core_web_lg` model for spaCy will be downloaded automatically if configured, otherwise run:*
+    ```bash
+    python -m spacy download en_core_web_lg
+    ```
+
 ## 🏃‍♂️ Usage
 
 ### Running the Frontend (Streamlit)
@@ -80,29 +93,35 @@ Upload a document to see the processing pipeline in action.
 ### Running Tests
 Verify the installation and logic:
 ```bash
-# Run unit tests (mocked Tesseract)
-pytest tests/test_ocr.py tests/test_classification.py tests/test_extraction.py
-
-# Run LIVE integration test (requires Tesseract binary installed)
-pytest tests/test_tesseract_live.py
+# Run full suite
+pytest tests/
 ```
 
 ## 📂 Project Structure
 
 ```text
 DocuMind.ai/
-├── app.py                  # Streamlit Frontend
-├── main.py                 # FastAPI Backend (stub)
-├── requirements.txt        # Python dependencies
+├── app.py                      # Streamlit Frontend
+├── requirements.txt            # Python dependencies
 ├── src/
-│   ├── pipeline.py         # Main orchestration logic
+│   ├── pipeline.py             # Main Orchestration
 │   ├── ocr/
-│   │   └── tesseract_engine.py # Tesseract implementation
-│   ├── processing/
+│   │   └── tesseract_engine.py # Tesseract Wrapper
+│   ├── preprocessing/
 │   │   └── image_processor.py  # Image enhancement
 │   ├── classification/
 │   │   └── rule_based.py       # Document classifier
-│   └── extraction/
-│       └── regex_extractor.py  # Data extractor
-└── tests/                  # Unit and Integration tests
+│   ├── extraction/
+│   │   ├── regex_extractor.py               # Base regex tools
+│   │   └── document_specific/
+│   │       ├── invoice_extractor.py         # Invoice logic
+│   │       ├── receipt_extractor.py         # Receipt logic
+│   │       └── resume_extractor.py          # Resume logic (Hybrid)
+│   └── validation/
+│       ├── validators.py       # Validation Logic
+│       └── auto_correct.py     # OCR Correction
+└── tests/                      # Unit and Integration tests
 ```
+
+## 🛡️ License
+MIT
