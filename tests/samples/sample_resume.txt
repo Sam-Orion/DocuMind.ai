@@ -1,0 +1,32 @@
+John Doe
+Software Engineer
+john.doe@email.com | (555) 123-4567
+Anytown, USA
+linkedin.com/in/johndoe | github.com/johndoe
+
+Summary
+Experienced software engineer with a focus on backend systems and AI integration.
+
+Experience
+Software Engineer - Tech Solutions Inc.
+Jan 2021 - Present
+- Developed REST APIs using FastAPI and Python.
+- Implemented CI/CD pipelines with Docker and Jenkins.
+- Optimized database queries, reducing load times by 30%.
+
+Junior Developer - WebCorp
+Jun 2019 - Dec 2020
+- Built full-stack applications with React and Node.js.
+- Collaborated with design team to improve UI/UX.
+
+Education
+Bachelor of Science in Computer Science
+State University, Anytown, USA
+Graduated: May 2019
+
+Skills
+Python, Java, JavaScript, TypeScript, SQL, Docker, Kubernetes, AWS, React, FastAPI, Git, Agile
+
+Certifications
+AWS Certified Solutions Architect – Associate
+Certified Scrum Master
